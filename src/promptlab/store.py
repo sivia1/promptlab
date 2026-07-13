@@ -1,9 +1,9 @@
 """Persistence: SQLite + a JSON mirror per experiment.
 
-SQLite is the source of truth for history and deltas; each experiment is also
-written to `experiments/<id>.json` so a run is inspectable (and diffable in git)
-without a DB browser. No ORM — the schema is small and the SQL is clearer than a
-mapping layer would be.
+SQLite is the source of truth for history; each experiment is also written to
+``experiments/<id>.json`` so a run is inspectable (and diffable) without a DB
+browser. No ORM — the schema is small and the SQL is clearer than a mapping
+layer would be.
 """
 
 from __future__ import annotations
@@ -12,21 +12,29 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .schemas import ExperimentResult, ExperimentSummary, ResultRow
+from .schemas import ComparisonSummary, ExperimentResult, ExperimentSummary, ResultRow
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS experiments (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at  TEXT NOT NULL,
-    question    TEXT NOT NULL,
-    model       TEXT NOT NULL,
-    reference   TEXT NOT NULL DEFAULT '',
-    winner_label TEXT
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at   TEXT NOT NULL,
+    question     TEXT NOT NULL,
+    reference    TEXT NOT NULL DEFAULT '',
+    best_quality TEXT,
+    fastest      TEXT,
+    cheapest     TEXT,
+    best_overall TEXT
 );
 CREATE TABLE IF NOT EXISTS results (
     experiment_id     INTEGER NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
     label             TEXT NOT NULL,
+    provider          TEXT NOT NULL,
+    model             TEXT NOT NULL,
+    prompt            TEXT NOT NULL,
     output            TEXT NOT NULL,
+    temperature       REAL,
+    top_p             REAL,
+    max_tokens        INTEGER,
     latency_ms        INTEGER NOT NULL,
     prompt_tokens     INTEGER NOT NULL,
     completion_tokens INTEGER NOT NULL,
@@ -60,24 +68,26 @@ class Store:
         self,
         *,
         question: str,
-        model: str,
         reference: str,
         rows: list[ResultRow],
-        winner_label: str | None,
+        summary: ComparisonSummary,
     ) -> ExperimentResult:
         cur = self._conn.execute(
-            "INSERT INTO experiments (created_at, question, model, reference, winner_label) "
-            "VALUES (datetime('now'), ?, ?, ?, ?)",
-            (question, model, reference, winner_label),
+            "INSERT INTO experiments (created_at, question, reference, best_quality, fastest, "
+            "cheapest, best_overall) VALUES (datetime('now'), ?, ?, ?, ?, ?, ?)",
+            (question, reference, summary.best_quality, summary.fastest,
+             summary.cheapest, summary.best_overall),
         )
         exp_id = int(cur.lastrowid)
         for r in rows:
             self._conn.execute(
-                "INSERT INTO results (experiment_id, label, output, latency_ms, prompt_tokens, "
-                "completion_tokens, total_tokens, cost_usd, judge_overall, judge_json, bleu, "
-                "rouge_l, is_winner, error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO results (experiment_id, label, provider, model, prompt, output, "
+                "temperature, top_p, max_tokens, latency_ms, prompt_tokens, completion_tokens, "
+                "total_tokens, cost_usd, judge_overall, judge_json, bleu, rouge_l, is_winner, error) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    exp_id, r.label, r.output, r.latency_ms, r.prompt_tokens,
+                    exp_id, r.label, r.provider, r.model, r.prompt, r.output,
+                    r.temperature, r.top_p, r.max_tokens, r.latency_ms, r.prompt_tokens,
                     r.completion_tokens, r.total_tokens, r.cost_usd, r.judge_overall,
                     r.judge.model_dump_json(), r.bleu, r.rouge_l, int(r.is_winner), r.error,
                 ),
@@ -104,39 +114,49 @@ class Store:
             id=exp["id"],
             created_at=exp["created_at"],
             question=exp["question"],
-            model=exp["model"],
             reference=exp["reference"],
-            winner_label=exp["winner_label"],
             results=[self._row_to_result(r) for r in rows],
+            summary=ComparisonSummary(
+                best_quality=exp["best_quality"],
+                fastest=exp["fastest"],
+                cheapest=exp["cheapest"],
+                best_overall=exp["best_overall"],
+            ),
         )
 
     def list_experiments(self, limit: int = 50) -> list[ExperimentSummary]:
-        rows = self._conn.execute(
-            "SELECT e.id, e.created_at, e.question, e.model, e.winner_label, "
-            "COUNT(r.rowid) AS num_prompts, "
-            "MAX(CASE WHEN r.is_winner = 1 THEN r.judge_overall END) AS winner_judge "
-            "FROM experiments e LEFT JOIN results r ON r.experiment_id = e.id "
-            "GROUP BY e.id ORDER BY e.id DESC LIMIT ?",
-            (limit,),
+        exps = self._conn.execute(
+            "SELECT * FROM experiments ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
-        return [
-            ExperimentSummary(
-                id=r["id"],
-                created_at=r["created_at"],
-                question=r["question"],
-                model=r["model"],
-                num_prompts=r["num_prompts"],
-                winner_label=r["winner_label"],
-                winner_judge=r["winner_judge"],
+        out = []
+        for e in exps:
+            models = self._conn.execute(
+                "SELECT DISTINCT model FROM results WHERE experiment_id = ? ORDER BY rowid",
+                (e["id"],),
+            ).fetchall()
+            out.append(
+                ExperimentSummary(
+                    id=e["id"],
+                    created_at=e["created_at"],
+                    question=e["question"],
+                    num_runs=len(models),
+                    models=[m["model"] for m in models],
+                    best_overall=e["best_overall"],
+                )
             )
-            for r in rows
-        ]
+        return out
 
     @staticmethod
     def _row_to_result(r: sqlite3.Row) -> ResultRow:
         return ResultRow(
             label=r["label"],
+            provider=r["provider"],
+            model=r["model"],
+            prompt=r["prompt"],
             output=r["output"],
+            temperature=r["temperature"],
+            top_p=r["top_p"],
+            max_tokens=r["max_tokens"],
             latency_ms=r["latency_ms"],
             prompt_tokens=r["prompt_tokens"],
             completion_tokens=r["completion_tokens"],

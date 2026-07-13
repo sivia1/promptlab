@@ -30,3 +30,6 @@ frontend/dist/
 
 # OS
 .DS_Store
+
+# Local API key store (never commit)
+.promptlab_keys.json

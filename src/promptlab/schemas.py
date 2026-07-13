@@ -1,7 +1,8 @@
 """Pydantic models — the contract between the API, the runner, and storage.
 
-One canonical shape for a prompt version, a scored result, and a whole
-experiment. Everything the frontend renders is one of these serialized to JSON.
+An experiment now compares independent *runs*: each run picks its own provider,
+model, prompt, and inference settings, all answering one shared question. That
+makes an experiment able to compare models, prompts, and parameters at once.
 """
 
 from __future__ import annotations
@@ -28,27 +29,47 @@ class JudgeScores(BaseModel):
         return round((self.relevance + self.clarity + self.completeness) / 3, 2)
 
 
-class PromptVersion(BaseModel):
-    """One labelled prompt under test."""
+class RunConfig(BaseModel):
+    """One thing to run: a provider + model + prompt + optional inference knobs."""
 
-    label: str = Field(..., description="Short id shown in the table, e.g. 'V1' or 'A'.")
-    text: str = Field(..., description="The prompt template / system text to run.")
+    provider: str = Field(..., description="Provider id, e.g. 'openai' or 'anthropic'.")
+    model: str = Field(..., description="Model id from the catalog, e.g. 'gpt-4o-mini'.")
+    prompt: str = Field(..., description="System prompt for this run.")
+    label: str = Field("", description="Display label; defaults to 'Provider · Model'.")
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
+    api_key: str | None = Field(
+        None,
+        description=(
+            "BYOK: this caller's own key for this run's provider, sent fresh with "
+            "every request. Used only for this one call — never persisted to disk, "
+            "logged, or echoed back in any response. Falls back to a server-side "
+            "key (env var, or the stored file if PROMPTLAB_ALLOW_STORED_KEYS=true) "
+            "when omitted."
+        ),
+    )
 
 
 class RunRequest(BaseModel):
     """Payload for POST /run."""
 
-    question: str = Field(..., description="The user question every prompt answers.")
-    prompts: list[PromptVersion] = Field(..., min_length=1)
-    model: str = Field(..., description="Model id from the catalog, e.g. 'gpt-4o-mini'.")
+    question: str = Field(..., description="The user question every run answers.")
     reference: str = Field("", description="Optional gold answer; enables BLEU/ROUGE.")
+    runs: list[RunConfig] = Field(..., min_length=1)
 
 
 class ResultRow(BaseModel):
-    """A scored answer for one prompt version."""
+    """A scored answer for one run."""
 
     label: str
+    provider: str
+    model: str
+    prompt: str
     output: str
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
     latency_ms: int
     prompt_tokens: int
     completion_tokens: int
@@ -62,25 +83,36 @@ class ResultRow(BaseModel):
     error: str | None = None
 
 
+class ComparisonSummary(BaseModel):
+    """Per-dimension winners across the runs — the 'story' of the experiment."""
+
+    best_quality: str | None = None  # highest judge score
+    fastest: str | None = None  # lowest latency
+    cheapest: str | None = None  # lowest cost
+    best_overall: str | None = None  # quality first, then speed, then cost
+
+
 class ExperimentResult(BaseModel):
-    """A full run: the request, every scored row, and the winner."""
+    """A full experiment: the request, every scored run, and the summary."""
 
     id: int
     created_at: str = Field(default_factory=_now)
     question: str
-    model: str
     reference: str = ""
     results: list[ResultRow]
-    winner_label: str | None = None
+    summary: ComparisonSummary
+
+    @property
+    def winner_label(self) -> str | None:
+        return self.summary.best_overall
 
 
 class ExperimentSummary(BaseModel):
-    """Compact row for the history sidebar."""
+    """Compact row for the history page."""
 
     id: int
     created_at: str
     question: str
-    model: str
-    num_prompts: int
-    winner_label: str | None = None
-    winner_judge: float | None = None
+    num_runs: int
+    models: list[str] = Field(default_factory=list)
+    best_overall: str | None = None

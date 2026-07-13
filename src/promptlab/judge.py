@@ -99,13 +99,16 @@ def judge_answer(llm, *, question: str, candidate: str, reference: str = "") -> 
     if type(llm).__name__ == "StubLLM":
         return _neutral_verdict()
 
+    from .llm import GenParams
+
     reference_block = f"\nReference answer (for guidance):\n{reference}\n" if reference.strip() else ""
     user = _JUDGE_TEMPLATE.format(
         question=question,
         reference_block=reference_block,
         candidate=candidate,
     )
-    completion = llm.complete(system=JUDGE_SYSTEM, user=user)
+    # Judge deterministically (temperature 0) so scores are stable across reruns.
+    completion = llm.complete(system=JUDGE_SYSTEM, user=user, params=GenParams(temperature=0.0))
     raw = completion.text if hasattr(completion, "text") else str(completion)
     return parse_judge_response(raw)
 
