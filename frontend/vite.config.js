@@ -1,0 +1,17 @@
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// In dev, calls to /api are proxied to the FastAPI backend (default :8000), so
+// the frontend can use same-origin fetches and avoid CORS entirely. Override the
+// target with PROMPTLAB_API_PROXY when the backend runs on another port.
+const apiTarget = process.env.PROMPTLAB_API_PROXY || 'http://localhost:8000'
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    port: 5173,
+    proxy: {
+      '/api': apiTarget,
+    },
+  },
+})

@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Env / secrets
+.env
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# PromptLab data (runs are regenerated; keep the dirs, not their contents)
+promptlab.db
+experiments/*.json
+exports/*.json
+exports/*.csv
+
+# Node / frontend
+node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
